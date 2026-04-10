@@ -7,6 +7,55 @@ import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+const MOCK_GOING = [
+  { initials: "MR", name: "Maya" },
+  { initials: "JT", name: "Jordan" },
+  { initials: "PK", name: "Priya" },
+  { initials: "CM", name: "Carlos" },
+  { initials: "SL", name: "Sam" },
+];
+const MOCK_INTERESTED = [
+  { initials: "AW", name: "Alex" },
+  { initials: "TN", name: "Tara" },
+  { initials: "DM", name: "Devon" },
+];
+
+function AvatarStack({
+  users,
+  totalCount,
+  label,
+}: {
+  users: { initials: string; name: string }[];
+  totalCount: number;
+  label: string;
+}) {
+  const shown = users.slice(0, 5);
+  const overflow = totalCount - shown.length;
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex -space-x-2">
+        {shown.map((u, i) => (
+          <div
+            key={i}
+            title={u.name}
+            className="w-7 h-7 rounded-full border-2 border-[#141414] bg-[#2a2a2a] flex items-center justify-center text-[9px] font-bold text-zinc-300 shrink-0"
+          >
+            {u.initials}
+          </div>
+        ))}
+        {overflow > 0 && (
+          <div className="w-7 h-7 rounded-full border-2 border-[#141414] bg-[#1f1f1f] flex items-center justify-center text-[9px] font-bold text-zinc-500">
+            +{overflow}
+          </div>
+        )}
+      </div>
+      <p className="text-zinc-400 text-xs">
+        <span className="text-white font-semibold">{totalCount}</span> {label}
+      </p>
+    </div>
+  );
+}
+
 export default async function EventPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const event = getEvent(slug);
@@ -20,30 +69,60 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
   const drinkMin = venue ? parseInt(venue.avgDrinkPrice.replace(/[^0-9]/g, "").slice(0, 2)) : 14;
   const estimatedSpend = `$${ticketMin + drinkMin * 3 + 10 + 20}–${ticketMin + 20 + drinkMin * 5 + 10 + 20}`;
 
+  // Predicted scores from historical data
+  const predictedVenue = venue?.overallRating;
+  const artistRatings = lineupArtists.filter(Boolean).map((a) => a!.liveRating);
+  const predictedArtist =
+    artistRatings.length > 0
+      ? Math.round((artistRatings.reduce((a, b) => a + b, 0) / artistRatings.length) * 10) / 10
+      : undefined;
+
+  // Social proof mock counts (seeded from worthItVotes for variation)
+  const goingCount = 5 + (event.worthItVotes % 20);
+  const interestedCount = 3 + (event.worthItVotes % 12);
+
   return (
     <div className="space-y-8">
       {/* Header */}
       <div>
         <div className="flex flex-wrap gap-1.5 mb-2">
           {event.genres.map((g) => (
-            <Badge key={g} className="bg-[#1f1f1f] text-zinc-400 border-0 text-xs">{g}</Badge>
+            <Badge key={g} className="bg-[#1f1f1f] text-zinc-400 border-0 text-xs">
+              {g}
+            </Badge>
           ))}
         </div>
         <h1 className="text-3xl font-black tracking-tight">{event.name}</h1>
         {venue && (
-          <Link href={`/venues/${venue.slug}`} className="text-zinc-400 hover:text-white transition-colors mt-1 block">
+          <Link
+            href={`/venues/${venue.slug}`}
+            className="text-zinc-400 hover:text-white transition-colors mt-1 block"
+          >
             {venue.name} · {venue.neighborhood}
           </Link>
         )}
-        <p className="text-zinc-500 text-sm mt-0.5">{event.date} · Doors {event.time}</p>
+        <p className="text-zinc-500 text-sm mt-0.5">
+          {event.date} · Doors {event.time}
+        </p>
       </div>
 
-      {/* Worth it + ticket */}
+      {/* Social proof */}
+      <div className="bg-[#141414] border border-[#242424] rounded-xl p-4 space-y-3">
+        <AvatarStack users={MOCK_GOING} totalCount={goingCount} label="going" />
+        <div className="w-full h-px bg-[#1f1f1f]" />
+        <AvatarStack users={MOCK_INTERESTED} totalCount={interestedCount} label="interested" />
+      </div>
+
+      {/* Ticket + spend */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-[#141414] border border-[#242424] rounded-xl p-4 text-center">
           <p className="text-zinc-500 text-xs">Ticket</p>
           <p className="text-white font-black text-xl mt-1">{event.ticketPrice}</p>
-          <a href={event.ticketUrl} className="text-xs mt-1 block hover:opacity-80 transition-opacity" style={{ color: "#FF746C" }}>
+          <a
+            href={event.ticketUrl}
+            className="text-xs mt-1 block hover:opacity-80 transition-opacity"
+            style={{ color: "#FF746C" }}
+          >
             Get tickets →
           </a>
         </div>
@@ -60,7 +139,15 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
           <div>
             <p className="text-zinc-500 text-xs">Community verdict</p>
             <p className="text-white font-bold mt-0.5">
-              <span className={event.worthItScore >= 75 ? "text-green-400" : event.worthItScore >= 50 ? "text-[#FF746C]" : "text-red-400"}>
+              <span
+                className={
+                  event.worthItScore >= 75
+                    ? "text-green-400"
+                    : event.worthItScore >= 50
+                    ? "text-[#FF746C]"
+                    : "text-red-400"
+                }
+              >
                 {event.worthItScore}%
               </span>{" "}
               say worth it
@@ -70,8 +157,13 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
         </div>
       )}
 
-      {/* Per-dimension scores from event reviews */}
-      <EventReviewScores eventSlug={slug} />
+      {/* Per-dimension scores — real or predicted */}
+      <EventReviewScores
+        eventSlug={slug}
+        predictedVenue={predictedVenue}
+        predictedArtist={predictedArtist}
+        predictedMusic={predictedArtist}
+      />
 
       <Separator className="bg-[#242424]" />
 
@@ -79,32 +171,44 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
       <section className="space-y-3">
         <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Lineup</h2>
         <div className="space-y-2">
-          {lineupArtists.map((artist) => artist && (
-            <Link
-              key={artist.slug}
-              href={`/artists/${artist.slug}`}
-              className="card-accent flex items-center justify-between bg-[#141414] border border-[#242424] rounded-xl p-4 hover:border-zinc-600 transition-colors"
-            >
-              <div>
-                <p className="text-white font-semibold">{artist.name}</p>
-                <p className="text-zinc-500 text-xs">{artist.genres.join(" · ")}</p>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {artist.tags.slice(0, 2).map((t) => (
-                    <Badge key={t} className="text-[10px] bg-[#1f1f1f] text-zinc-400 border-0">#{t}</Badge>
-                  ))}
-                </div>
-              </div>
-              <div className="text-right">
-                <StarRating rating={artist.liveRating} />
-                <p className="text-zinc-500 text-xs mt-1">{artist.liveRatingCount} live reviews</p>
-                {parseInt(artist.spotifyFollowers) < 100000 && artist.liveRating >= 4.7 && (
-                  <Badge className="mt-1 text-[10px]" style={{ backgroundColor: "rgba(255,116,108,0.1)", color: "#FF746C", border: "1px solid rgba(255,116,108,0.2)" }}>
-                    Hidden Gem
-                  </Badge>
-                )}
-              </div>
-            </Link>
-          ))}
+          {lineupArtists.map(
+            (artist) =>
+              artist && (
+                <Link
+                  key={artist.slug}
+                  href={`/artists/${artist.slug}`}
+                  className="card-accent flex items-center justify-between bg-[#141414] border border-[#242424] rounded-xl p-4 hover:border-zinc-600 transition-colors"
+                >
+                  <div>
+                    <p className="text-white font-semibold">{artist.name}</p>
+                    <p className="text-zinc-500 text-xs">{artist.genres.join(" · ")}</p>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {artist.tags.slice(0, 2).map((t) => (
+                        <Badge key={t} className="text-[10px] bg-[#1f1f1f] text-zinc-400 border-0">
+                          #{t}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <StarRating rating={artist.liveRating} />
+                    <p className="text-zinc-500 text-xs mt-1">{artist.liveRatingCount} live reviews</p>
+                    {parseInt(artist.spotifyFollowers) < 100000 && artist.liveRating >= 4.7 && (
+                      <Badge
+                        className="mt-1 text-[10px]"
+                        style={{
+                          backgroundColor: "rgba(255,116,108,0.1)",
+                          color: "#FF746C",
+                          border: "1px solid rgba(255,116,108,0.2)",
+                        }}
+                      >
+                        Hidden Gem
+                      </Badge>
+                    )}
+                  </div>
+                </Link>
+              )
+          )}
         </div>
       </section>
 
@@ -132,7 +236,10 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
               <p className="text-white font-semibold">{venue.typicalDoorsDelay}</p>
             </div>
           </div>
-          <Link href={`/venues/${venue.slug}`} className="text-zinc-500 text-xs hover:text-white transition-colors">
+          <Link
+            href={`/venues/${venue.slug}`}
+            className="text-zinc-500 text-xs hover:text-white transition-colors"
+          >
             Full venue profile →
           </Link>
         </section>
@@ -148,17 +255,34 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
         if (allMedia.length === 0) return null;
         return (
           <section className="space-y-3">
-            <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Photos & Videos</h2>
+            <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+              Photos & Videos
+            </h2>
             <div className="flex gap-2 overflow-x-auto pb-2 -mx-4 px-4 scrollbar-none">
               {allMedia.map((m, i) => (
                 <div key={i} className="shrink-0 space-y-1">
                   {m.type === "image" ? (
-                    <a href={m.url} target="_blank" rel="noopener noreferrer" className="block w-36 h-36 rounded-xl overflow-hidden">
+                    <a
+                      href={m.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block w-36 h-36 rounded-xl overflow-hidden"
+                    >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={m.url} alt="" className="w-full h-full object-cover hover:scale-105 transition-transform duration-200" />
+                      <img
+                        src={m.url}
+                        alt=""
+                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
+                      />
                     </a>
                   ) : (
-                    <video src={m.url} muted autoPlay loop className="w-48 h-36 rounded-xl object-cover" />
+                    <video
+                      src={m.url}
+                      muted
+                      autoPlay
+                      loop
+                      className="w-48 h-36 rounded-xl object-cover"
+                    />
                   )}
                   <p className="text-[10px] text-zinc-600 pl-1">{m.authorName}</p>
                 </div>
@@ -172,13 +296,19 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Reviews</h2>
-          <Link href={`/events/${slug}/review`} className="text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: "#FF746C" }}>
+          <Link
+            href={`/events/${slug}/review`}
+            className="text-xs font-semibold hover:opacity-80 transition-opacity"
+            style={{ color: "#FF746C" }}
+          >
             + Write one
           </Link>
         </div>
         {eventReviews.length > 0 ? (
           <div className="space-y-4">
-            {eventReviews.map((r) => <ReviewCard key={r.id} review={r} />)}
+            {eventReviews.map((r) => (
+              <ReviewCard key={r.id} review={r} />
+            ))}
           </div>
         ) : (
           <p className="text-zinc-600 text-sm">No reviews yet. Be the first.</p>

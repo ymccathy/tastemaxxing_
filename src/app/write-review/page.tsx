@@ -1,75 +1,222 @@
 "use client";
-import { useState, useRef } from "react";
-import { events, venues, artists, computeOverall } from "@/lib/data";
-import { Badge } from "@/components/ui/badge";
-
-type MediaFile = { previewUrl: string; type: "image" | "video"; name: string };
-
-const TAGS = [
-  "arrive-early", "stay-till-close", "worth-double", "overpriced", "hidden-gem",
-  "must-see", "vinyl-only", "crowd-was-incredible", "tourist-crowd", "intimate",
-  "peak-hour-magic", "good-sound", "earplugs-required", "no-phones-vibe", "b2b",
-  "skip-coat-check", "go-sober", "buy-the-ticket", "arrive-late", "surprise-guest",
-];
+import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { events, venues, artists } from "@/lib/data";
+import {
+  DimensionRating,
+  saveEventReview,
+  ratingToScore,
+  scoreToEmoji,
+  getEventAvgScores,
+} from "@/lib/event-reviews";
 
 const BRAND = "#FF746C";
 
-function StarPicker({ label, value, onChange }: { label: string; value: number; onChange: (n: number) => void }) {
+const OPTIONS: { value: DimensionRating; emoji: string; label: string }[] = [
+  { value: "loved", emoji: "🔥", label: "Loved it" },
+  { value: "fine", emoji: "😐", label: "It was fine" },
+  { value: "skip", emoji: "💀", label: "Skip it" },
+];
+
+const RATING_STEPS: {
+  key: "venueRating" | "artistRating" | "musicRating";
+  question: string;
+}[] = [
+  { key: "venueRating", question: "How was the venue?" },
+  { key: "artistRating", question: "How was the artist?" },
+  { key: "musicRating", question: "How was the music?" },
+];
+
+type SearchResult = {
+  type: "event" | "artist" | "venue";
+  slug: string;
+  name: string;
+  sub: string;
+};
+
+type Ratings = {
+  venueRating: DimensionRating | null;
+  artistRating: DimensionRating | null;
+  musicRating: DimensionRating | null;
+};
+
+type MediaFile = { previewUrl: string; type: "image" | "video"; name: string };
+
+function useCountUp(target: number, active: boolean) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setValue(0);
+      return;
+    }
+    const duration = 900;
+    const start = Date.now();
+    let frame: number;
+    const tick = () => {
+      const elapsed = Date.now() - start;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setValue(Math.round(eased * target * 10) / 10);
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [target, active]);
+  return value;
+}
+
+function ProgressBar({ step }: { step: number }) {
   return (
-    <div className="flex items-center justify-between py-1">
-      <span className="text-zinc-300 text-sm font-semibold w-16">{label}</span>
-      <div className="flex gap-2">
-        {[1, 2, 3, 4, 5].map((n) => (
-          <button
-            key={n}
-            type="button"
-            onClick={() => onChange(n)}
-            className="w-9 h-9 rounded-xl font-bold text-sm transition-all"
-            style={
-              n <= value
-                ? { backgroundColor: BRAND, color: "#000" }
-                : { backgroundColor: "#1f1f1f", color: "#555" }
-            }
-          >
-            {n}
-          </button>
-        ))}
-      </div>
+    <div className="flex items-center gap-1.5">
+      {[1, 2, 3].map((s) => (
+        <div
+          key={s}
+          className="h-1 rounded-full flex-1 transition-all duration-300"
+          style={{ backgroundColor: s <= step ? BRAND : "#242424" }}
+        />
+      ))}
     </div>
   );
 }
 
+function typeIcon(type: SearchResult["type"]) {
+  if (type === "event") return "🎵";
+  if (type === "artist") return "👤";
+  return "📍";
+}
+
 export default function WriteReviewPage() {
-  const [reviewType, setReviewType] = useState<"event" | "venue" | "artist">("event");
-  const [selectedTarget, setSelectedTarget] = useState("");
-  const [djRating, setDjRating] = useState(0);
-  const [crowdRating, setCrowdRating] = useState(0);
-  const [venueRating, setVenueRating] = useState(0);
-  const [worthIt, setWorthIt] = useState<boolean | null>(null);
-  const [text, setText] = useState("");
-  const [spend, setSpend] = useState("");
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const router = useRouter();
+  // step: 0=search, 1-3=rating, 4=success
+  const [step, setStep] = useState(0);
+  const [animKey, setAnimKey] = useState(0);
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<SearchResult | null>(null);
+  const [ratings, setRatings] = useState<Ratings>({
+    venueRating: null,
+    artistRating: null,
+    musicRating: null,
+  });
+  const [showNote, setShowNote] = useState(false);
+  const [note, setNote] = useState("");
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
-  const [submitted, setSubmitted] = useState(false);
+  const [countActive, setCountActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const overall = computeOverall(
-    reviewType !== "venue" && djRating ? djRating : undefined,
-    crowdRating || undefined,
-    reviewType !== "artist" && venueRating ? venueRating : undefined,
-  );
+  const results: SearchResult[] =
+    query.trim().length > 0
+      ? [
+          ...events
+            .filter((e) => e.name.toLowerCase().includes(query.toLowerCase()))
+            .slice(0, 4)
+            .map((e) => ({
+              type: "event" as const,
+              slug: e.slug,
+              name: e.name,
+              sub: `${venues.find((v) => v.slug === e.venueSlug)?.name ?? ""} · ${e.date}`,
+            })),
+          ...artists
+            .filter((a) => a.name.toLowerCase().includes(query.toLowerCase()))
+            .slice(0, 3)
+            .map((a) => ({
+              type: "artist" as const,
+              slug: a.slug,
+              name: a.name,
+              sub: a.genres.join(" · "),
+            })),
+          ...venues
+            .filter((v) => v.name.toLowerCase().includes(query.toLowerCase()))
+            .slice(0, 3)
+            .map((v) => ({
+              type: "venue" as const,
+              slug: v.slug,
+              name: v.name,
+              sub: v.neighborhood,
+            })),
+        ]
+      : [];
 
-  const targets =
-    reviewType === "event"
-      ? events.map((e) => ({ slug: e.slug, name: `${e.name} @ ${venues.find((v) => v.slug === e.venueSlug)?.name} (${e.date})` }))
-      : reviewType === "venue"
-      ? venues.map((v) => ({ slug: v.slug, name: v.name }))
-      : artists.map((a) => ({ slug: a.slug, name: a.name }));
+  // Preview aggregate scores for the success screen (not yet saved)
+  const previewVenue =
+    step === 4 && ratings.venueRating
+      ? (() => {
+          const v = ratingToScore(ratings.venueRating);
+          if (selected?.type === "event") {
+            const ex = getEventAvgScores(selected.slug);
+            if (ex.count > 0)
+              return Math.round(((ex.venue! * ex.count + v) / (ex.count + 1)) * 10) / 10;
+          }
+          return v;
+        })()
+      : null;
 
-  function toggleTag(tag: string) {
-    setSelectedTags((prev) =>
-      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
-    );
+  const previewArtist =
+    step === 4 && ratings.artistRating
+      ? (() => {
+          const a = ratingToScore(ratings.artistRating);
+          if (selected?.type === "event") {
+            const ex = getEventAvgScores(selected.slug);
+            if (ex.count > 0)
+              return Math.round(((ex.artist! * ex.count + a) / (ex.count + 1)) * 10) / 10;
+          }
+          return a;
+        })()
+      : null;
+
+  const previewMusic =
+    step === 4 && ratings.musicRating
+      ? (() => {
+          const m = ratingToScore(ratings.musicRating);
+          if (selected?.type === "event") {
+            const ex = getEventAvgScores(selected.slug);
+            if (ex.count > 0)
+              return Math.round(((ex.music! * ex.count + m) / (ex.count + 1)) * 10) / 10;
+          }
+          return m;
+        })()
+      : null;
+
+  useEffect(() => {
+    if (step === 4) {
+      const t = setTimeout(() => setCountActive(true), 150);
+      return () => clearTimeout(t);
+    }
+    setCountActive(false);
+  }, [step]);
+
+  const venueDisplay = useCountUp(previewVenue ?? 0, countActive && previewVenue !== null);
+  const artistDisplay = useCountUp(previewArtist ?? 0, countActive && previewArtist !== null);
+  const musicDisplay = useCountUp(previewMusic ?? 0, countActive && previewMusic !== null);
+
+  function selectTarget(result: SearchResult) {
+    setSelected(result);
+    setAnimKey((k) => k + 1);
+    setStep(1);
+  }
+
+  function pickRating(key: "venueRating" | "artistRating" | "musicRating", value: DimensionRating) {
+    setRatings((prev) => ({ ...prev, [key]: value }));
+    setTimeout(() => {
+      setAnimKey((k) => k + 1);
+      setStep((s) => s + 1);
+    }, 300);
+  }
+
+  function handlePost() {
+    if (!selected) return;
+    if (selected.type === "event") {
+      saveEventReview({
+        id: `er-${Date.now()}`,
+        eventSlug: selected.slug,
+        venueRating: ratings.venueRating!,
+        artistRating: ratings.artistRating!,
+        musicRating: ratings.musicRating!,
+        note: note.trim() || undefined,
+        media: mediaFiles.map((m) => ({ type: m.type, url: m.previewUrl })),
+        date: new Date().toISOString(),
+      });
+    }
+    router.push("/");
   }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -84,233 +231,285 @@ export default function WriteReviewPage() {
     e.target.value = "";
   }
 
-  function removeMedia(index: number) {
-    setMediaFiles((prev) => {
-      URL.revokeObjectURL(prev[index].previewUrl);
-      return prev.filter((_, i) => i !== index);
-    });
-  }
-
-  if (submitted) {
+  // ── Step 0: Search ──────────────────────────────────────────────────
+  if (step === 0) {
     return (
-      <div className="text-center space-y-4 py-20">
-        <p className="text-4xl">🎉</p>
-        <h2 className="text-2xl font-black" style={{ fontFamily: "'Clash Display', sans-serif" }}>
-          Review logged.
-        </h2>
-        <p className="text-zinc-400 text-sm">Thanks for helping the community spend their money right.</p>
-        <button
-          onClick={() => {
-            setSubmitted(false); setSelectedTarget(""); setText("");
-            setDjRating(0); setCrowdRating(0); setVenueRating(0);
-            setWorthIt(null); setSelectedTags([]); setMediaFiles([]);
-          }}
-          className="text-sm font-semibold hover:opacity-80"
-          style={{ color: BRAND }}
-        >
-          Write another →
-        </button>
+      <div className="flex flex-col" style={{ minHeight: "calc(100svh - 5rem)" }}>
+        <div className="flex items-center justify-between pt-4 pb-6">
+          <h1
+            className="text-xl font-black"
+            style={{ fontFamily: "'Clash Display', sans-serif" }}
+          >
+            Log a show
+          </h1>
+          <button
+            onClick={() => router.push("/")}
+            className="text-zinc-500 text-sm hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+
+        <div className="relative">
+          <svg
+            className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none"
+            width="18"
+            height="18"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <circle cx="11" cy="11" r="8" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35" />
+          </svg>
+          <input
+            autoFocus
+            type="text"
+            placeholder="Search event, artist, or venue…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full bg-[#141414] border border-[#242424] rounded-2xl pl-12 pr-4 py-4 text-white text-base placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+          />
+        </div>
+
+        {results.length > 0 && (
+          <div className="mt-4 space-y-2">
+            {results.map((r) => (
+              <button
+                key={`${r.type}-${r.slug}`}
+                onClick={() => selectTarget(r)}
+                className="w-full flex items-center gap-4 bg-[#141414] border border-[#242424] rounded-2xl p-4 text-left hover:border-zinc-600 transition-colors"
+              >
+                <span className="text-2xl leading-none shrink-0">{typeIcon(r.type)}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-white font-semibold truncate">{r.name}</p>
+                  <p className="text-zinc-500 text-xs truncate mt-0.5">{r.sub}</p>
+                </div>
+                <svg
+                  className="shrink-0 text-zinc-600"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 18l6-6-6-6" />
+                </svg>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {query.trim().length > 0 && results.length === 0 && (
+          <p className="text-zinc-600 text-sm text-center mt-10">
+            No results for &ldquo;{query}&rdquo;
+          </p>
+        )}
+
+        {query.trim().length === 0 && (
+          <p className="text-zinc-600 text-sm text-center mt-12">
+            Start typing to search…
+          </p>
+        )}
       </div>
     );
   }
 
-  return (
-    <div className="space-y-8 pb-4">
-      <h1 className="text-2xl font-black tracking-tight pt-2" style={{ fontFamily: "'Clash Display', sans-serif" }}>
-        Write a Review
-      </h1>
-
-      {/* Review type */}
-      <div className="space-y-2">
-        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Reviewing a…</p>
-        <div className="flex gap-2">
-          {(["event", "venue", "artist"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => { setReviewType(t); setSelectedTarget(""); setDjRating(0); setCrowdRating(0); setVenueRating(0); }}
-              className="px-4 py-2 rounded-full text-sm font-semibold transition-colors capitalize"
-              style={
-                reviewType === t
-                  ? { backgroundColor: BRAND, color: "#000" }
-                  : { backgroundColor: "#1f1f1f", color: "#9ca3af" }
-              }
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Target */}
-      <div className="space-y-2">
-        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Which one?</p>
-        <select
-          value={selectedTarget}
-          onChange={(e) => setSelectedTarget(e.target.value)}
-          className="w-full bg-[#141414] border border-[#242424] rounded-xl p-3 text-white text-sm focus:outline-none focus:border-zinc-500"
-        >
-          <option value="">Select a {reviewType}…</option>
-          {targets.map((t) => (
-            <option key={t.slug} value={t.slug}>{t.name}</option>
-          ))}
-        </select>
-      </div>
-
-      {/* ── 3-part rating ─────────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Rate the Experience</p>
-          {overall > 0 && (
-            <div className="flex items-baseline gap-1">
-              <span className="text-3xl font-black" style={{ color: BRAND, fontFamily: "'Clash Display', sans-serif" }}>
-                {overall.toFixed(1)}
-              </span>
-              <span className="text-zinc-600 text-sm">/ 5</span>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-[#141414] border border-[#242424] rounded-2xl p-5 space-y-4">
-          {reviewType !== "venue" && (
-            <StarPicker label="DJ" value={djRating} onChange={setDjRating} />
-          )}
-          <StarPicker label="Crowd" value={crowdRating} onChange={setCrowdRating} />
-          {reviewType !== "artist" && (
-            <StarPicker label="Venue" value={venueRating} onChange={setVenueRating} />
-          )}
-
-          {/* Live overall bar */}
-          {overall > 0 && (
-            <div className="pt-3 border-t border-[#242424]">
-              <div className="flex items-center justify-between text-xs text-zinc-500 mb-1.5">
-                <span>Overall</span>
-                <span style={{ color: BRAND }}>{overall.toFixed(1)} / 5</span>
-              </div>
-              <div className="h-2 bg-[#1f1f1f] rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all duration-300"
-                  style={{ width: `${(overall / 5) * 100}%`, backgroundColor: BRAND }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Worth it */}
-      <div className="space-y-2">
-        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Worth it?</p>
-        <div className="flex gap-3">
-          <button
-            onClick={() => setWorthIt(true)}
-            className="flex-1 py-3 rounded-xl font-semibold text-sm transition-colors"
-            style={worthIt === true ? { backgroundColor: "#22c55e", color: "#fff" } : { backgroundColor: "#1f1f1f", color: "#9ca3af" }}
-          >
-            Worth it
-          </button>
-          <button
-            onClick={() => setWorthIt(false)}
-            className="flex-1 py-3 rounded-xl font-semibold text-sm transition-colors"
-            style={worthIt === false ? { backgroundColor: "#ef4444", color: "#fff" } : { backgroundColor: "#1f1f1f", color: "#9ca3af" }}
-          >
-            Skip
-          </button>
-        </div>
-      </div>
-
-      {/* Spend */}
-      <div className="space-y-2">
-        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Total spend <span className="text-zinc-700 normal-case font-normal">optional</span></p>
-        <input
-          type="text"
-          placeholder="e.g. $85"
-          value={spend}
-          onChange={(e) => setSpend(e.target.value)}
-          className="w-full bg-[#141414] border border-[#242424] rounded-xl p-3 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
-        />
-      </div>
-
-      {/* Tags */}
-      <div className="space-y-2">
-        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Tags</p>
-        <div className="flex flex-wrap gap-2">
-          {TAGS.map((tag) => (
-            <button
-              key={tag}
-              onClick={() => toggleTag(tag)}
-              className="text-xs px-3 py-1.5 rounded-full transition-colors"
-              style={
-                selectedTags.includes(tag)
-                  ? { backgroundColor: BRAND, color: "#000", fontWeight: 600 }
-                  : { backgroundColor: "#1f1f1f", color: "#9ca3af" }
-              }
-            >
-              #{tag}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Review text */}
-      <div className="space-y-2">
-        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Your review</p>
-        <textarea
-          rows={4}
-          placeholder="What was the set like? Is it worth the trip?"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          className="w-full bg-[#141414] border border-[#242424] rounded-xl p-4 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 resize-none"
-        />
-      </div>
-
-      {/* Photos & Videos */}
-      <div className="space-y-3">
-        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Photos & Videos</p>
-        <input ref={fileInputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={handleFileChange} />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="w-full py-3 bg-[#141414] border border-dashed border-[#3f3f3f] rounded-xl text-sm text-zinc-400 hover:border-[#FF746C] hover:text-[#FF746C] transition-colors"
-        >
-          + Add photos or videos
-        </button>
-        {mediaFiles.length > 0 && (
-          <div className="grid grid-cols-3 gap-2">
-            {mediaFiles.map((m, i) => (
-              <div key={i} className="relative group aspect-square rounded-lg overflow-hidden bg-black">
-                {m.type === "image" ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={m.previewUrl} alt={m.name} className="w-full h-full object-cover" />
-                ) : (
-                  <video src={m.previewUrl} className="w-full h-full object-cover" muted />
-                )}
-                {m.type === "video" && (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <span className="text-white text-2xl opacity-80">▶</span>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeMedia(i)}
-                  className="absolute top-1 right-1 w-5 h-5 bg-black/70 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Submit */}
-      <button
-        disabled={!selectedTarget || overall === 0 || !text.trim()}
-        onClick={() => setSubmitted(true)}
-        className="w-full py-4 font-black text-base rounded-2xl transition-opacity disabled:opacity-25 disabled:cursor-not-allowed hover:opacity-90"
-        style={{ backgroundColor: BRAND, color: "#000" }}
+  // ── Steps 1–3: Rating ───────────────────────────────────────────────
+  if (step >= 1 && step <= 3) {
+    const stepDef = RATING_STEPS[step - 1];
+    return (
+      <div
+        key={animKey}
+        className="flex flex-col animate-in slide-in-from-right-8 fade-in duration-200"
+        style={{ minHeight: "calc(100svh - 5rem)" }}
       >
-        Post Review
-      </button>
-    </div>
-  );
+        <div className="flex items-center justify-between pt-4 pb-5">
+          <p className="text-zinc-500 text-xs font-semibold truncate max-w-[70%]">
+            {selected?.name}
+          </p>
+          <button
+            onClick={() => router.push("/")}
+            className="text-zinc-500 text-sm hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+
+        <ProgressBar step={step} />
+
+        <div className="pt-8 pb-8 space-y-2">
+          <p className="text-xs font-bold uppercase tracking-widest" style={{ color: BRAND }}>
+            {step} of 3
+          </p>
+          <h1
+            className="text-3xl font-black tracking-tight leading-tight"
+            style={{ fontFamily: "'Clash Display', sans-serif" }}
+          >
+            {stepDef.question}
+          </h1>
+        </div>
+
+        <div className="space-y-3 flex-1">
+          {OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => pickRating(stepDef.key, opt.value)}
+              className="w-full flex items-center gap-5 rounded-2xl p-5 border border-[#242424] bg-[#141414] text-left hover:border-zinc-600 transition-all duration-150 active:scale-[0.98]"
+            >
+              <span className="text-5xl leading-none select-none">{opt.emoji}</span>
+              <p
+                className="text-xl font-black leading-tight"
+                style={{ fontFamily: "'Clash Display', sans-serif" }}
+              >
+                {opt.label}
+              </p>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 4: Success + Post ──────────────────────────────────────────
+  if (step === 4) {
+    const scoreCells = [
+      { label: "Venue", display: venueDisplay, target: previewVenue },
+      { label: "Artist", display: artistDisplay, target: previewArtist },
+      { label: "Music", display: musicDisplay, target: previewMusic },
+    ];
+
+    return (
+      <div
+        key={animKey}
+        className="flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-300"
+        style={{ minHeight: "calc(100svh - 5rem)" }}
+      >
+        <div className="pt-4 pb-2">
+          <p className="text-zinc-500 text-xs font-semibold">{selected?.name}</p>
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center space-y-10">
+          <div className="text-center space-y-2">
+            <div className="text-4xl animate-in zoom-in duration-300">✨</div>
+            <h1
+              className="text-3xl font-black tracking-tight"
+              style={{ fontFamily: "'Clash Display', sans-serif" }}
+            >
+              Logged.
+            </h1>
+            <p className="text-zinc-500 text-sm">Community scores</p>
+          </div>
+
+          <div className="flex justify-around w-full max-w-xs">
+            {scoreCells.map(({ label, display, target }) =>
+              target !== null ? (
+                <div key={label} className="flex flex-col items-center gap-2">
+                  <span className="text-2xl">{scoreToEmoji(display)}</span>
+                  <span
+                    className="text-3xl font-black leading-none tabular-nums"
+                    style={{ color: BRAND, fontFamily: "'Clash Display', sans-serif" }}
+                  >
+                    {display.toFixed(1)}
+                  </span>
+                  <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-bold">
+                    {label}
+                  </span>
+                </div>
+              ) : null
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-3 pb-4">
+          {showNote && (
+            <div className="space-y-3 animate-in slide-in-from-top-2 fade-in duration-200">
+              <textarea
+                rows={3}
+                autoFocus
+                placeholder="What made it memorable?"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                className="w-full bg-[#141414] border border-[#242424] rounded-xl p-4 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 resize-none"
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/*"
+                multiple
+                className="hidden"
+                onChange={handleFileChange}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full py-3 bg-[#141414] border border-dashed border-[#3f3f3f] rounded-xl text-sm text-zinc-400 hover:border-[#FF746C] hover:text-[#FF746C] transition-colors"
+              >
+                + Add photos or videos
+              </button>
+              {mediaFiles.length > 0 && (
+                <div className="grid grid-cols-3 gap-2">
+                  {mediaFiles.map((m, i) => (
+                    <div
+                      key={i}
+                      className="relative aspect-square rounded-lg overflow-hidden bg-black"
+                    >
+                      {m.type === "image" ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={m.previewUrl}
+                          alt={m.name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <video
+                          src={m.previewUrl}
+                          className="w-full h-full object-cover"
+                          muted
+                        />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMediaFiles((prev) => {
+                            URL.revokeObjectURL(prev[i].previewUrl);
+                            return prev.filter((_, idx) => idx !== i);
+                          });
+                        }}
+                        className="absolute top-1 right-1 w-5 h-5 bg-black/70 rounded-full text-white text-xs flex items-center justify-center"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={handlePost}
+            className="w-full py-4 font-black text-base rounded-2xl transition-opacity hover:opacity-90 active:scale-[0.98]"
+            style={{ backgroundColor: BRAND, color: "#000" }}
+          >
+            Post
+          </button>
+
+          {!showNote && (
+            <button
+              onClick={() => setShowNote(true)}
+              className="w-full text-center text-sm text-zinc-600 hover:text-zinc-400 transition-colors py-1"
+            >
+              Add a note or photo
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 }
