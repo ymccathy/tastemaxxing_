@@ -1,6 +1,7 @@
 import { getEvent, getVenue, getArtist, reviews } from "@/lib/data";
 import { StarRating } from "@/components/StarRating";
 import { ReviewCard } from "@/components/ReviewCard";
+import { EventReviewScores } from "@/components/EventReviewScores";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
@@ -68,6 +69,9 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
           <p className="text-zinc-600 text-xs">{event.worthItVotes} votes</p>
         </div>
       )}
+
+      {/* Per-dimension scores from event reviews */}
+      <EventReviewScores eventSlug={slug} />
 
       <Separator className="bg-[#242424]" />
 
@@ -168,7 +172,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Reviews</h2>
-          <Link href="/write-review" className="text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: "#FF746C" }}>
+          <Link href={`/events/${slug}/review`} className="text-xs font-semibold hover:opacity-80 transition-opacity" style={{ color: "#FF746C" }}>
             + Write one
           </Link>
         </div>
